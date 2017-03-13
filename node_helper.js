@@ -6,6 +6,7 @@
  */
  
 var NodeHelper = require('node_helper');
+var moment = require('moment');
 var google = require('googleapis');
 var fs = require('fs');
 var OAuth2 = google.auth.OAuth2;
@@ -14,8 +15,8 @@ module.exports = NodeHelper.create({
 
 	start: function () {
 		console.log('MMM-GmailNotifier helper started ...');
-		this.checkInProgress = false;
-		this.messageIds = [];
+		this.messageIds = []; //map of view slots to message ids, tracks which messages are shown where.
+		this.messageData = []; //map of message ids to contents, saves on api calls.
 	},
 
 	socketNotificationReceived: function(notification, payload) {
@@ -37,12 +38,10 @@ module.exports = NodeHelper.create({
 		}
 	},
 
+	//called to set the config options for this helper and start the mail checker.
 	initMailFeed: function(cfg){
 		console.log("initMailFeed");
 		this.config = cfg;
-		for(var i = 0; i < this.config.maxResults; i++){
-			this.messageIds[i] = -1;
-		}
 
 		//load up our saved tokens if they exist
 		this.loadTokens(this.config.tokenPath);
@@ -58,10 +57,10 @@ module.exports = NodeHelper.create({
 		if(typeof this.mailLoop === 'undefined'){
 			var self = this;
 			this.mailLoop = setInterval(
-				function(){ self.updateMessageList(); }, 
+				function(){ self.getUnreadMessageList(); }, 
 				self.config.checkFreq
 			);
-			self.updateMessageList(); //call this now so we don't wait a whole cycle
+			self.getUnreadMessageList(); //call this now so we don't wait a whole cycle
 		}
 	},
 
@@ -92,7 +91,7 @@ module.exports = NodeHelper.create({
 		}
 	},
 
-	//Stores any held oauth tokens to disk.
+	//Writes any held oauth tokens to disk.
 	saveTokens: function(){
 		console.log("saveTokens");
 		try {
@@ -116,7 +115,7 @@ module.exports = NodeHelper.create({
 		return this.oauth2Client;
 	},
 
-	//Generates and returns an oauth authorization url.
+	//Generates and returns an oauth authorization request url.
 	getOAuthAuthUrl: function(){
 		console.log("getOAuthAuthUrl");
 		return this.getOAuth().generateAuthUrl({
@@ -126,13 +125,9 @@ module.exports = NodeHelper.create({
 		});
 	},
 
-	updateMessageList: function(){
-		this.getUnreadMessages();
-	},
-
 	//Gets ids of unread messages in a gmail inbox using the currently held oauth tokens.
-	getUnreadMessages: function(){
-		console.log("getUnreadMessages");
+	getUnreadMessageList: function(){
+		console.log("getUnreadMessageList");
 		var self = this;
 		//make an api call
 		google.gmail('v1').users.messages.list({
@@ -144,86 +139,124 @@ module.exports = NodeHelper.create({
 		}, function(error, result){ self.parseUnreadMessageList(error, result); } );
 	},
 	
-	//Parses the results of a mailbox contents request.
+	//Parses the results of a mailbox contents request. Updates the list of message ids
+	//currently being displayed, then clears the message data cache of any useless information.
 	parseUnreadMessageList: function(error, result){
 		console.log("parseUnreadMessageList");
 
 		//if something went wrong:
 		if(error){
 			console.log(error);
+
+			//did some internal error occur (like a timeout)?
+			if(typeof error.errors === 'undefined'){
+				return false; //bail out here, this update failed. We'll retry later.
+
 			//if the tokens were invalid:
-			if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
+			}else if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
 				//stop the mail checker loop
 				this.stopMailLoop();
 				//tell the frontend to show the auth button
 				this.sendSocketNotification("SHOW_AUTH_BUTTON");
 
-			//if some other error occurred:
-			}else{
-				//retry?
 			}
 
 		//if everything went ok:
 		}else{
 			console.log(result);
 
-			//parse the list of messages
-			//if the id we find doesn't match the one already in that slot, order an update.
+			//parse the list of messages and call updateMessageSlot for each.
+
 			if(typeof result.messages === 'undefined'){
-				console.log("got 0 message ids: " + ids);
+				//we got 0 results back, clear all rows.
+				console.log("got 0 message ids");
 				for(var i = 0; i < this.config.maxResults; i++){
-					//no message here, clear this index.
-					delete this.messageIds[i];
-					this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i});
+					delete this.messageData[i];
+					this.updateMessageSlot(i);
 				}
+
 			}else{
 				console.log("got " + result.messages.length + " message ids");
 
 				//read through the list, update any changed message ids
 				for(var i = 0; i < this.config.maxResults; i++){
-
+					
 					if(typeof result.messages[i] === 'undefined' && typeof this.messageIds[i] !== 'undefined'){
 						//no message, clear this slot.
-						console.log("clearing message id " + i);
+						console.log("Message slot " + i + " now empty");
 						delete this.messageIds[i];
-						this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i});
-
-					}else if(typeof result.messages[i] !== 'undefined'){
-						console.log("message id " + i + ": " + result.messages[i].id);
-						 if(this.messageIds[i] != result.messages[i].id){
-							//message id is different, update this slot.
-							console.log("id changed, getting contents");
-							this.messageIds[i] = result.messages[i].id;						
-							this.getMessageContents(i);
-						}
+						this.updateMessageSlot(i);
+					}else if(typeof result.messages[i] !== 'undefined' && this.messageIds[i] != result.messages[i].id){
+						//message id changed, update it.
+						console.log("Message slot " + i + " is now " + result.messages[i].id);
+						this.messageIds[i] = result.messages[i].id;
+						this.updateMessageSlot(i);
 					}
 				}
+				
+				//remove any useless message data from the cache
+				//any keys that aren't in our new message id list should be dropped
+				//just copy over anything we still need to a new array and replace the old one.
+				//gc should take care of it.
+				var newData = [];
+				for(var i = 0; i < this.messageIds.length; i++){
+					if(typeof this.messageData[this.messageIds[i]] !== 'undefined'){
+						newData[this.messageIds[i]] = this.messageData[this.messageIds[i]];
+					}
+				}
+				this.messageData = newData;
 			}
 		}
-		
 	},
 
-	getMessageContents: function(index){
-		console.log("getMessageContents");
+	//signals the view to update slot i if the necessary data is cached, otherwise this
+	//sends a message.get call to the gmail api to retrieve it.
+	updateMessageSlot: function(i){
+		console.log("updateMessageSlot");
 
-		var self = this;
-		//make a n api call
-		google.gmail('v1').users.messages.get({
-			auth:  this.getOAuth(),
-			userId: this.config.email,
-			id: this.messageIds[index],
-			format: "metadata",
-			metadataHeaders: ["Subject","From","Date"],
+		if(typeof this.messageIds[i] === 'undefined'){
+			console.log("slot " + i + " empty");
+			//this message slot is now blank, tell the view.
+			this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i});
+
+		}else{
+			var messageId = this.messageIds[i];
 			
-		}, function(error, result){ self.parseMessageContents(error, result, index); } );
+			if(typeof this.messageData[messageId] !== 'undefined'){			
+				//we already have data for this messageId, reuse it.
+				this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, data: this.messageData[messageId]});
+
+			}else{
+				//have to get new data, make an API call.
+				console.log("retriving new message data for id " + messageId);
+				var self = this;
+				//make an api call
+				google.gmail('v1').users.messages.get({
+					auth:  this.getOAuth(),
+					userId: this.config.email,
+					id: messageId,
+					format: "metadata",
+					metadataHeaders: ["Subject","From","Date"],
+		
+				}, function(error, result){ self.parseMessageData(error, result, i); } );
+			}
+		}
 	},
 
-	parseMessageContents: function(error, result, i){
+	//parses the json object returned by a message.get call to the gmail api,
+	//stores it in the cache, and signals the view to update.
+	parseMessageData: function(error, result, i){
+		console.log("parseMessageData");
 		//if something went wrong:
 		if(error){
 			console.log(error);
+
+			//did some internal error occur (like a timeout)?
+			if(typeof error.errors === 'undefined'){
+				this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, data: {subject: "Error Retrieving Message."}});
+
 			//if the tokens were invalid:
-			if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
+			}else if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
 				//stop the mail checker loop
 				this.stopMailLoop();
 				//tell the frontend to show the auth button
@@ -231,13 +264,38 @@ module.exports = NodeHelper.create({
 
 			//if some other error occurred:
 			}else{
-				this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, headers: {subject: "Error Retrieving Message."}});
+				this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, data: {subject: "Error Retrieving Message."}});
 			}
 
 		//if everything went ok:
 		}else{
 			console.log(result);
-			this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, headers: {subject: this.getHeaderParam(result, "Subject"), sender: this.getHeaderParam(result, "From"), date: this.getHeaderParam(result, "Date")}});
+
+			var d = {};
+				
+			d.subject = this.getHeaderParam(result, "Subject");
+			
+			var sender = this.getHeaderParam(result, "From"); 
+			var a = sender.indexOf("<");
+			var b = sender.indexOf(">");
+			if(a != -1){
+				d.senderName = sender.substring(0, a - 1);
+				if(b != -1){
+					d.senderAddress = sender.substring(a + 1, b);
+				}
+			}
+
+			var date = this.getHeaderParam(result, "Date");
+			if(date !== ""){
+				var m = moment(new Date(date));
+				d.date = m.format("M/D");
+				d.time = m.format("h:mma");
+			}
+			
+			console.log(d);
+			
+			this.messageData[this.messageIds[i]] = d;
+			this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, data: d});
 		}
 	},
 

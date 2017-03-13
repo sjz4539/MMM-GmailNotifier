@@ -77,7 +77,7 @@ Module.register("MMM-GmailNotifier", {
 			this.showAuthWindow(payload);
 
 		}else if(notification === "UPDATE_MESSAGE_ROW"){
-			this.updateMessageRow(payload.index, payload.headers);
+			this.updateMessageRow(payload.index, payload.data);
 			this.showMailFeed();
 
 		}
@@ -89,6 +89,10 @@ Module.register("MMM-GmailNotifier", {
 
 	getStyles: function(){
 		return [];
+	},
+
+	getHeader: function(){
+		return "Email";
 	},
 
 	getDom: function(){
@@ -127,7 +131,6 @@ Module.register("MMM-GmailNotifier", {
 
 		}else if(this.state == 2){
 			//got messages
-			this.clearMessageRows();
 			for(var i = 0; i < this.messageRows.length; i++){
 				container.appendChild(this.messageRows[i]);
 			}
@@ -143,6 +146,7 @@ Module.register("MMM-GmailNotifier", {
 		var infoRow = document.createElement("tr");
 
 		messageRow.subjectCell = document.createElement("td");
+		messageRow.subjectCell.innerHTML = "test";
 		messageRow.infoCell = document.createElement("td");
 
 		subjectRow.appendChild(messageRow.subjectCell);
@@ -214,39 +218,22 @@ Module.register("MMM-GmailNotifier", {
 		}
 	},
 
-	updateMessageRow: function(index, headers){
-		Log.info("updateMessageRow");
+	updateMessageRow: function(index, data){
+		Log.info("updateMessageRow " + index);
 		var messageRow = this.messageRows[index];
 
-		if(typeof headers === 'undefined'){
-			messageRow.subjectCell.innerHTML = "";
+		if(typeof data === 'undefined'){
+			if(index == 0){
+				messageRow.subjectCell.innerHTML = "No unread messages.";
+			}else{
+				messageRow.subjectCell.innerHTML = "";
+			}
 			messageRow.infoCell.innerHTML = "";
 
 		}else{
-			
-			messageRow.subjectCell.innerHTML = headers.subject || "Some Message";
+			messageRow.subjectCell.innerHTML = data.subject || "Some Message";
+			messageRow.infoCell.innerHTML = "From " + (data.senderName || "someone") + " (" + (data.senderAddress || "somewhere") + ") at " + (data.time || "some time") + " on " + (data.date || "some day");
 
-			var senderName = "someone"; 
-			var senderAddress = "some address";
-			var dateString = "some day";
-			var timeString = "some time";
-
-			if(typeof headers.sender !== 'undefined'){
-				if(headers.sender.indexOf("<") != -1){
-					senderName = headers.sender.substring(0, headers.sender.indexOf("<") - 1);
-					if(headers.sender.indexOf(">") != -1){
-						senderAddress = headers.sender.substring(headers.sender.indexOf("<") + 1, headers.sender.indexOf(">"));
-					}
-				}
-			}
-
-			if(typeof headers.date !== 'undefined'){
-				var m = moment(new Date(headers.date));
-				var dateString = m.format("M/D");
-				var timeString = m.format("h:mma");
-			}
-
-			messageRow.infoCell.innerHTML = "From " + senderName + " (" + senderAddress + ") at " + timeString + " on " + dateString;
 		}
 	}
 
