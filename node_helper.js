@@ -14,11 +14,36 @@ module.exports = NodeHelper.create({
 
 	start: function () {
 		console.log('MMM-GmailNotifier helper started ...');
+		this.checkInProgress = false;
+		this.messageIds = [];
+	},
+
+	socketNotificationReceived: function(notification, payload) {
+
+		console.log("GmailNotifier node_helper received notification " + notification + " with payload " + payload);
+
+		if(notification === "INIT_MAIL_FEED"){
+			this.initMailFeed(payload);
+
+		}else if(notification === "PROCESS_AUTH_CODE"){
+			this.processAuthCode(payload);
+
+		}else if(notification === "GEN_AUTH_URL"){
+			this.sendSocketNotification("SHOW_AUTH_WINDOW", this.getOAuthAuthUrl());
+
+		}else if(notification === "PRINT_MESSAGE"){
+			console.log(payload);
+
+		}
 	},
 
 	initMailFeed: function(cfg){
 		console.log("initMailFeed");
 		this.config = cfg;
+		for(var i = 0; i < this.config.maxResults; i++){
+			this.messageIds[i] = -1;
+		}
+
 		//load up our saved tokens if they exist
 		this.loadTokens(this.config.tokenPath);
 		//init client object
@@ -33,10 +58,10 @@ module.exports = NodeHelper.create({
 		if(typeof this.mailLoop === 'undefined'){
 			var self = this;
 			this.mailLoop = setInterval(
-				function(){ self.getMailFeed(); }, 
+				function(){ self.updateMessageList(); }, 
 				self.config.checkFreq
 			);
-			self.getMailFeed(); //call this now so we don't wait a whole cycle
+			self.updateMessageList(); //call this now so we don't wait a whole cycle
 		}
 	},
 
@@ -101,30 +126,30 @@ module.exports = NodeHelper.create({
 		});
 	},
 
-	//Gets the contents of a gmail user's inbox with the currently held oauth tokens.
-	getMailFeed: function(){
-		console.log("getMailFeed");
+	updateMessageList: function(){
+		this.getUnreadMessages();
+	},
+
+	//Gets ids of unread messages in a gmail inbox using the currently held oauth tokens.
+	getUnreadMessages: function(){
+		console.log("getUnreadMessages");
 		var self = this;
 		//make an api call
 		google.gmail('v1').users.messages.list({
+			auth:  this.getOAuth(),
+			userId: this.config.email,
 			maxResults: this.config.maxResults,
-			userId: 'me',
-			auth:  this.getOAuth()
-		}, function(error, result){ self.parseMailFeed(error, result); } );
+			labelIds: "INBOX",
+			q: "is:unread",
+		}, function(error, result){ self.parseUnreadMessageList(error, result); } );
 	},
 	
 	//Parses the results of a mailbox contents request.
-	parseMailFeed: function(error, result){
-		console.log("parseMailFeed");
-		//parse the results
-		
-		//if it succeeds:
-		if(!error){
-			//send the results to the frontend via notification
-			this.sendSocketNotification("SHOW_MAIL_FEED", result.messages);
+	parseUnreadMessageList: function(error, result){
+		console.log("parseUnreadMessageList");
 
-		//if it fails:
-		}else{
+		//if something went wrong:
+		if(error){
 			console.log(error);
 			//if the tokens were invalid:
 			if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
@@ -132,10 +157,87 @@ module.exports = NodeHelper.create({
 				this.stopMailLoop();
 				//tell the frontend to show the auth button
 				this.sendSocketNotification("SHOW_AUTH_BUTTON");
-			//else:
+
+			//if some other error occurred:
 			}else{
 				//retry?
 			}
+
+		//if everything went ok:
+		}else{
+			console.log(result);
+
+			//parse the list of messages
+			//if the id we find doesn't match the one already in that slot, order an update.
+			if(typeof result.messages === 'undefined'){
+				console.log("got 0 message ids: " + ids);
+				for(var i = 0; i < this.config.maxResults; i++){
+					//no message here, clear this index.
+					delete this.messageIds[i];
+					this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i});
+				}
+			}else{
+				console.log("got " + result.messages.length + " message ids");
+
+				//read through the list, update any changed message ids
+				for(var i = 0; i < this.config.maxResults; i++){
+
+					if(typeof result.messages[i] === 'undefined' && typeof this.messageIds[i] !== 'undefined'){
+						//no message, clear this slot.
+						console.log("clearing message id " + i);
+						delete this.messageIds[i];
+						this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i});
+
+					}else if(typeof result.messages[i] !== 'undefined'){
+						console.log("message id " + i + ": " + result.messages[i].id);
+						 if(this.messageIds[i] != result.messages[i].id){
+							//message id is different, update this slot.
+							console.log("id changed, getting contents");
+							this.messageIds[i] = result.messages[i].id;						
+							this.getMessageContents(i);
+						}
+					}
+				}
+			}
+		}
+		
+	},
+
+	getMessageContents: function(index){
+		console.log("getMessageContents");
+
+		var self = this;
+		//make a n api call
+		google.gmail('v1').users.messages.get({
+			auth:  this.getOAuth(),
+			userId: this.config.email,
+			id: this.messageIds[index],
+			format: "metadata",
+			metadataHeaders: ["Subject","From","Date"],
+			
+		}, function(error, result){ self.parseMessageContents(error, result, index); } );
+	},
+
+	parseMessageContents: function(error, result, i){
+		//if something went wrong:
+		if(error){
+			console.log(error);
+			//if the tokens were invalid:
+			if(this.config.tokens.refresh_token === "" || error.errors[0].reason === 'authError'){
+				//stop the mail checker loop
+				this.stopMailLoop();
+				//tell the frontend to show the auth button
+				this.sendSocketNotification("SHOW_AUTH_BUTTON");
+
+			//if some other error occurred:
+			}else{
+				this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, headers: {subject: "Error Retrieving Message."}});
+			}
+
+		//if everything went ok:
+		}else{
+			console.log(result);
+			this.sendSocketNotification("UPDATE_MESSAGE_ROW", {index: i, headers: {subject: this.getHeaderParam(result, "Subject"), sender: this.getHeaderParam(result, "From"), date: this.getHeaderParam(result, "Date")}});
 		}
 	},
 
@@ -174,24 +276,19 @@ module.exports = NodeHelper.create({
                 return results[1];
         },
 
-	socketNotificationReceived: function(notification, payload) {
+	getHeaderParam: function(json, id){
+		var result = "";
+		try{
+			for(index in json.payload.headers){
+				console.log(json.payload.headers[index].name + " " + json.payload.headers[index].value);
+				if(json.payload.headers[index].name == id){
+					result = json.payload.headers[index].value;
+				}
+			}
+		}catch(e){}
 
-		console.log("GmailNotifier node_helper received notification " + notification + " with payload " + payload);
-
-		if(notification === "INIT_MAIL_FEED"){
-			this.initMailFeed(payload);
-
-		}else if(notification === "PROCESS_AUTH_CODE"){
-			this.processAuthCode(payload);
-
-		}else if(notification === "GEN_AUTH_URL"){
-			this.sendSocketNotification("SHOW_AUTH_WINDOW", this.getOAuthAuthUrl());
-
-		}else if(notification === "PRINT_MESSAGE"){
-			console.log(payload);
-
-		}
-	},
+		return result;
+	}
 
 });
 

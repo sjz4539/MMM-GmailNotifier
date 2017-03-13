@@ -29,6 +29,7 @@ Module.register("MMM-GmailNotifier", {
 		checkFreq: 60000,
 		clientId: "",
 		clientSecret: "",
+		email: "me",
 	},
 
 	// ===========================
@@ -43,7 +44,19 @@ Module.register("MMM-GmailNotifier", {
 		]
 		this.config.tokenDir = this.data.path + 'oauth/';
 		this.config.tokenPath = this.data.path + 'oauth/gmail-oauth.json';
+
+		if(this.config.maxResults > 10){
+			this.config.maxResults = 10;
+		}
+
 		this.state = 0;
+		this.messageRows = [];
+
+		for(var i = 0; i < this.config.maxResults; i++){
+			this.messageRows[i] = this.genMessageRow();
+		}
+
+		Log.info("this.messageRows: " + this.messageRows);	
 		this.sendSocketNotification("INIT_MAIL_FEED", this.config);
 	},
 
@@ -58,10 +71,14 @@ Module.register("MMM-GmailNotifier", {
 			this.showAuthButton();
 
 		}else if(notification === "SHOW_MAIL_FEED"){
-			this.showMailFeed(payload);
+			this.showMailFeed();
 
 		}else if(notification === "SHOW_AUTH_WINDOW"){
 			this.showAuthWindow(payload);
+
+		}else if(notification === "UPDATE_MESSAGE_ROW"){
+			this.updateMessageRow(payload.index, payload.headers);
+			this.showMailFeed();
 
 		}
 	},
@@ -75,44 +92,71 @@ Module.register("MMM-GmailNotifier", {
 	},
 
 	getDom: function(){
-		var container = document.createElement('div');
+		var container = document.createElement('table');
+		container.className = "small";
+
 
 		if(this.config.clientId === "" || this.config.clientSecret === ""){
-			container.innerHTML = this.translate("Client ID/Secret missing. Check your config.");
+			//invalid config
+			container.innerHTML = "Client ID/Secret missing. Check your config.";
+			container.className = "small dimmed";
 
 		}else if(this.state == 0){
-			container.id = "loading-div";
+			//not yet loaded up
 			container.innerHTML = "Loading...";
+			container.className = "small dimmed";
 
 		}else if(this.state == 1){
-			container.id = "authorize-div";
+			//require user auth
+			var messageRow = document.createElement("tr");
+			messageRow.innerHTML = "Please grant access to your Gmail account.";
+			container.appendChild(messageRow);
 
-			//display a simple message to the user
-			var loginMessage = document.createElement("span");
-			loginMessage.innerHTML = "Grant access to your Gmail account";
-			container.appendChild(loginMessage);
-
-			//display login button
+			var loginRow = document.createElement("tr");
 			var loginButton = document.createElement("input");
 			loginButton.setAttribute("type", "button");
-			loginButton.innerHTML = "Authorize";
-			loginButton.id = "authorize-button";
+			loginButton.value = "Authorize";
 
 			var self = this;
-
 			loginButton.onclick = function(event){
 				self.sendSocketNotification("GEN_AUTH_URL");
 			};
-			container.appendChild(loginButton);
+			
+			loginRow.appendChild(loginButton);
+			container.appendChild(loginRow);
 
 		}else if(this.state == 2){
-			container.id = "mail-div";
-			//could fill this here using some defined variable
-			//could also let the helper call a function that does this later via notification
-			container.innerHTML = "Got Emails";
+			//got messages
+			this.clearMessageRows();
+			for(var i = 0; i < this.messageRows.length; i++){
+				container.appendChild(this.messageRows[i]);
+			}
 		}
 
 		return container;
+	},
+
+	genMessageRow: function(){
+		var messageRow = document.createElement("tr");
+		var rowTable = document.createElement("table");
+		var subjectRow = document.createElement("tr");
+		var infoRow = document.createElement("tr");
+
+		messageRow.subjectCell = document.createElement("td");
+		messageRow.infoCell = document.createElement("td");
+
+		subjectRow.appendChild(messageRow.subjectCell);
+		subjectRow.className="small";
+		infoRow.appendChild(messageRow.infoCell);
+		infoRow.className="dimmed xsmall";
+
+		rowTable.appendChild(subjectRow);
+		rowTable.appendChild(infoRow);
+		messageRow.appendChild(rowTable);
+
+		messageRow.className = "messagerow";
+
+		return messageRow;
 	},
 
 	// ===================
@@ -133,12 +177,13 @@ Module.register("MMM-GmailNotifier", {
 		}
 	},
 
-	showMailFeed: function(mail){
-		this.state = 2;
-		this.mail = mail;
-		this.updateDom();
+	showMailFeed: function(){
+		if(this.state != 2){
+			this.state = 2;
+			this.updateDom();
+		}
 	},
-
+	
 	showAuthWindow: function(url){
 		//create a new window, redirect to a generated auth url
 		//get a new refresh/access token pair
@@ -161,5 +206,48 @@ Module.register("MMM-GmailNotifier", {
 		}, 100);
 		
 	},
+
+	clearMessageRows: function(){
+		for(row in this.messageRows){
+			this.messageRows[row].subjectCell.innerHTML = "";
+			this.messageRows[row].infoCell.innerHTML = "";
+		}
+	},
+
+	updateMessageRow: function(index, headers){
+		Log.info("updateMessageRow");
+		var messageRow = this.messageRows[index];
+
+		if(typeof headers === 'undefined'){
+			messageRow.subjectCell.innerHTML = "";
+			messageRow.infoCell.innerHTML = "";
+
+		}else{
+			
+			messageRow.subjectCell.innerHTML = headers.subject || "Some Message";
+
+			var senderName = "someone"; 
+			var senderAddress = "some address";
+			var dateString = "some day";
+			var timeString = "some time";
+
+			if(typeof headers.sender !== 'undefined'){
+				if(headers.sender.indexOf("<") != -1){
+					senderName = headers.sender.substring(0, headers.sender.indexOf("<") - 1);
+					if(headers.sender.indexOf(">") != -1){
+						senderAddress = headers.sender.substring(headers.sender.indexOf("<") + 1, headers.sender.indexOf(">"));
+					}
+				}
+			}
+
+			if(typeof headers.date !== 'undefined'){
+				var m = moment(new Date(headers.date));
+				var dateString = m.format("M/D");
+				var timeString = m.format("h:mma");
+			}
+
+			messageRow.infoCell.innerHTML = "From " + senderName + " (" + senderAddress + ") at " + timeString + " on " + dateString;
+		}
+	}
 
 });
