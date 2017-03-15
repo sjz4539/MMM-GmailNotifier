@@ -8,7 +8,7 @@ Requires the googleapis package, v18+
 config.js values:
 	maxResults: Number of unread emails to display. Integer between 1 & 10, default 5.
 	checkFreq: How often to poll for unread email, in milliseconds. Integer between 60000 (one minute) and 3600000 (one hour).
-	fade: If true, fade effect is used on lower end of display. Default true.
+	fade: If true, fade effect is used on lower end of display. Default true. NYI.
 	clientId: Client Id of google api app. Create your own.
 	clientSecret: Client Secret from the same ^.
 	email: Your email address.
@@ -39,9 +39,8 @@ Module.register("MMM-GmailNotifier", {
 		this.config.tokenDir = this.data.path + 'oauth/';
 		this.config.tokenPath = this.data.path + 'oauth/gmail-oauth.json';
 
-		if(this.config.maxResults > 10){
-			this.config.maxResults = 10;
-		}
+		this.config.maxResults = Math.max(Math.min(this.config.maxResults, 10), 1);
+		this.config.checkFreq = Math.max(Math.min(this.config.maxResults, 3600000), 60000);
 
 		this.state = 0;
 		this.messageRows = [];

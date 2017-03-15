@@ -427,7 +427,7 @@ module.exports = NodeHelper.create({
 	},
 
 	authError: function(error){
-		return error && error.errors && error.errors[0] && error.errors[0].reason === 'authError'
+		return error && error.code && (error.code == 403 || error.code == 400);
 	},
 
 	printDebug: function(message){
