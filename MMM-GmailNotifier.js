@@ -1,25 +1,18 @@
-//basic flow:
-//	startup
-//	init client
-//	get oauth refresh token
-//	validate oauth refresh token
-//	get oauth access token
-//	start loop: every x minutes:
-//		call gmail api
-//		update view with information
+/*
 
-//if any step fails, jump back to earlier steps
-//EX: if access token is bad, blank it and then call the function to get a new one,
-//which should check if the access is token is blank and use the refresh token to get a new one before returning it
+MMM-GmailNotifier
+A MagicMirror2 unread email notifier using the gmail api and oauth
 
-//if access and refresh tokens are invalid, 
-//display a message and login button for the user
+Requires the googleapis package, v18+
 
-//on startup:
-// view defaults to loading message
-// controller initializes
-
-//controller commands view to swap between displays
+config.js values:
+	maxResults: Number of unread emails to display. Integer between 1 & 10, default 5.
+	checkFreq: How often to poll for unread email, in milliseconds. Integer between 60000 (one minute) and 3600000 (one hour).
+	fade: If true, fade effect is used on lower end of display. Default true.
+	clientId: Client Id of google api app. Create your own.
+	clientSecret: Client Secret from the same ^.
+	email: Your email address.
+*/
 
 Module.register("MMM-GmailNotifier", {
 
@@ -27,9 +20,10 @@ Module.register("MMM-GmailNotifier", {
 	defaults: {
 		maxResults: 5,
 		checkFreq: 60000,
+		fade: true,
+		email: "me",
 		clientId: "",
 		clientSecret: "",
-		email: "me",
 	},
 
 	// ===========================
@@ -37,7 +31,7 @@ Module.register("MMM-GmailNotifier", {
 	// ===========================
 	
 	start: function(){
-		Log.info('MMM-GmailNotifier Started...');
+		//Log.info('MMM-GmailNotifier Started...');
 		this.config.redirectURL = "http://localhost:8080/MMM-GmailNotifier/redirect.html",
 		this.config.scopes = [
 			'https://www.googleapis.com/auth/gmail.readonly'
@@ -56,13 +50,13 @@ Module.register("MMM-GmailNotifier", {
 			this.messageRows[i] = this.genMessageRow();
 		}
 
-		Log.info("this.messageRows: " + this.messageRows);	
+		//Log.info("this.messageRows: " + this.messageRows);	
 		this.sendSocketNotification("INIT_MAIL_FEED", this.config);
 	},
 
 	socketNotificationReceived: function(notification, payload) {
 
-		Log.info("GmailNotifier received notification " + notification);
+		//Log.info("GmailNotifier received notification " + notification);
 
 		if(notification === "SHOW_LOADING_MESSAGE"){
 			this.showLoadingMessage();
@@ -91,10 +85,6 @@ Module.register("MMM-GmailNotifier", {
 		return [];
 	},
 
-	getHeader: function(){
-		return "Email";
-	},
-
 	getDom: function(){
 		var container = document.createElement('table');
 		container.className = "small";
@@ -113,7 +103,7 @@ Module.register("MMM-GmailNotifier", {
 		}else if(this.state == 1){
 			//require user auth
 			var messageRow = document.createElement("tr");
-			messageRow.innerHTML = "Please grant access to your Gmail account.";
+			messageRow.innerHTML = "Authorization Required.";
 			container.appendChild(messageRow);
 
 			var loginRow = document.createElement("tr");
@@ -146,7 +136,6 @@ Module.register("MMM-GmailNotifier", {
 		var infoRow = document.createElement("tr");
 
 		messageRow.subjectCell = document.createElement("td");
-		messageRow.subjectCell.innerHTML = "test";
 		messageRow.infoCell = document.createElement("td");
 
 		subjectRow.appendChild(messageRow.subjectCell);
@@ -219,7 +208,7 @@ Module.register("MMM-GmailNotifier", {
 	},
 
 	updateMessageRow: function(index, data){
-		Log.info("updateMessageRow " + index);
+		//Log.info("updateMessageRow " + index);
 		var messageRow = this.messageRows[index];
 
 		if(typeof data === 'undefined'){
